@@ -27,8 +27,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/opensourceways/code-server-operator/controllers/initplugins"
-	"github.com/opensourceways/code-server-operator/controllers/initplugins/interface"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	extv1 "k8s.io/api/extensions/v1beta1"
@@ -36,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	resourcev1 "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -44,6 +43,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/opensourceways/code-server-operator/controllers/initplugins"
+	"github.com/opensourceways/code-server-operator/controllers/initplugins/interface"
 
 	csv1alpha1 "github.com/opensourceways/code-server-operator/api/v1alpha1"
 )
@@ -483,12 +485,14 @@ func (r *CodeServerReconciler) reconcileForDeployment(codeServer *csv1alpha1.Cod
 	return oldDev, nil
 }
 
-func (r *CodeServerReconciler) reconcileForIngress(codeServer *csv1alpha1.CodeServer) (*extv1.Ingress, error) {
+func (r *CodeServerReconciler) reconcileForIngress(codeServer *csv1alpha1.CodeServer) (*unstructured.Unstructured, error) {
 	reqLogger := r.Log.WithValues("namespace", codeServer.Namespace, "name", codeServer.Name)
 	reqLogger.Info("Reconciling ingress.")
 	//reconcile ingress for code server
-	newIngress := r.NewIngress(codeServer)
-	oldIngress := &extv1.Ingress{}
+	newIngress := &unstructured.Unstructured{
+		Object: r.NewIngressMap(codeServer),
+	}
+	oldIngress := &unstructured.Unstructured{}
 	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: fmt.Sprintf(TerminalIngress, codeServer.Name), Namespace: codeServer.Namespace}, oldIngress)
 	if err != nil && errors.IsNotFound(err) {
 		reqLogger.Info("Creating an ingress.")
@@ -504,8 +508,8 @@ func (r *CodeServerReconciler) reconcileForIngress(codeServer *csv1alpha1.CodeSe
 			reqLogger.Error(err, fmt.Sprintf("Failed to get Ingress for %s.", codeServer.Name))
 			return nil, err
 		}
-		if !equality.Semantic.DeepEqual(oldIngress.Spec, newIngress.Spec) {
-			oldIngress.Spec = newIngress.Spec
+		if !equality.Semantic.DeepEqual(oldIngress.Object["spec"], newIngress.Object["spec"]) {
+			oldIngress.Object["spec"] = newIngress.Object["spec"]
 			reqLogger.Info("Updating an ingress.")
 			err = r.Client.Update(context.TODO(), oldIngress)
 			if err != nil {
@@ -1116,6 +1120,50 @@ func (r *CodeServerReconciler) newPVC(m *csv1alpha1.CodeServer) (*corev1.Persist
 	// Set CodeServer instance as the owner of the pvc.
 	controllerutil.SetControllerReference(m, pvc, r.Scheme)
 	return pvc, nil
+}
+
+func (r *CodeServerReconciler) NewIngressMap(m *csv1alpha1.CodeServer) map[string]interface{} {
+	var object = make(map[string]interface{})
+
+	object["apiVersion"] = "networking.k8s.io/v1"
+	object["kind"] = "ingress.networking.k8s.io"
+	object["metadata"] = map[string]interface{}{
+		"name":        fmt.Sprintf(TerminalIngress, m.Name),
+		"namespace":   m.Namespace,
+		"annotations": r.annotationsForIngress(),
+	}
+
+	object["spec"] = map[string]interface{}{
+		"rules": []map[string]interface{}{
+			{
+				"host": fmt.Sprintf("%s.%s", m.Spec.Subdomain, r.Options.DomainName),
+				"http": map[string]interface{}{
+					"paths": []map[string]interface{}{
+						{
+							"path": "/",
+							"backend": map[string]interface{}{
+								"service": map[string]interface{}{
+									"name": m.Name,
+									"port": map[string]interface{}{
+										"number": HttpPort,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"tls": []map[string]interface{}{
+			{
+				"hosts":      []string{fmt.Sprintf("%s.%s", m.Spec.Subdomain, r.Options.DomainName)},
+				"secretName": r.Options.HttpsSecretName,
+			},
+		},
+		"ingressClassName": "nginx",
+	}
+
+	return object
 }
 
 // NewIngress function takes in a CodeServer object and returns an ingress for that object.
