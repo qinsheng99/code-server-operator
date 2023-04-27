@@ -1126,7 +1126,7 @@ func (r *CodeServerReconciler) NewIngressMap(m *csv1alpha1.CodeServer) map[strin
 	var object = make(map[string]interface{})
 
 	object["apiVersion"] = "networking.k8s.io/v1"
-	object["kind"] = "ingress.networking.k8s.io"
+	object["kind"] = "Ingress.networking.k8s.io"
 	object["metadata"] = map[string]interface{}{
 		"name":        fmt.Sprintf(TerminalIngress, m.Name),
 		"namespace":   m.Namespace,
